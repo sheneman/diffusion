@@ -48,7 +48,7 @@ class DropoutBlock(nn.Module):
 class UNet(nn.Module):
 	def __init__(self):
 		super(UNet, self).__init__()
-		self.encoder1 = EncoderBlock(3, 64)
+		self.encoder1 = EncoderBlock(4, 64)
 		self.encoder2 = EncoderBlock(64, 128)
 		self.encoder3 = EncoderBlock(128, 256)
 		self.encoder4 = EncoderBlock(256, 512)
