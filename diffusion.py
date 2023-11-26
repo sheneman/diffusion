@@ -1,6 +1,7 @@
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import clip
 import pickle
@@ -20,7 +21,14 @@ MAX_EPOCHS     = 100
 LEARNING_RATE  = 0.001
 CHECKPOINT_DIR = "runs"
 
+# params for the noise schedule
+BETA_MIN = 0.0001
+BETA_MAX = 0.5
+
 RANDOM_SEED    = 42
+
+BATCH_SIZE = 1250
+SHUFFLE = True
 
 
 #
@@ -50,6 +58,19 @@ def cosine_noise_schedule(T, beta_min, beta_max):
     return beta_t
 
 
+def add_noise_to_images(images, variance):
+
+	std_dev = torch.sqrt(torch.tensor(variance))
+
+	# Generate Gaussian noise
+	noise = torch.randn_like(images) * std_dev
+
+	# Add noise to the images
+	noised_images = images + noise
+
+	return noised_images
+
+
 def apply_gaussian_noise(img, beta):
 	noise = np.random.normal(size=img.shape)
 	#print(beta, noise.shape)
@@ -64,17 +85,39 @@ class NormRRMSELoss(nn.Module):
 
 	def forward(self, predicted, target):
 		mse_loss = F.mse_loss(predicted, target, reduction='mean')
-		rrmse_loss = torch.sqrt(torch.sqrt(mse_loss))
-		norm_rrmse_loss = (rrmse_loss/(64*64*3))*100.0   # normalized to the pixel level
+		rrmse_loss = torch.sqrt(mse_loss)
+		norm_rrmse_loss = (rrmse_loss/(64*64*3))*1000.0   # normalized to the pixel level
 
 		return norm_rrmse_loss
 
 
+class CustomDataset(Dataset):
+	def __init__(self, filename, imgs, image_embeddings, caption_embeddings):
+		self.filename = filename
+		self.imgs = imgs
+		self.image_embeddings = image_embeddings
+		self.caption_embeddings = caption_embeddings
+
+	def __len__(self):
+		return len(self.imgs)
+
+	def __getitem__(self, idx):
+
+		# convert to PyTorch tensors
+		image1		    = np.transpose(self.imgs[idx],(2,0,1))/255
+		image2		    = torch.tensor(image1, dtype=torch.float32)
+
+		image_embedding	    = torch.tensor(self.image_embeddings[idx], dtype=torch.float32)
+		caption_embedding   = torch.tensor(self.image_embeddings[idx], dtype=torch.float32)
+
+		return self.filename[idx], image2, image_embedding, caption_embedding
+
+
 
 model = UNet()
-print(model)
-
+#print(model)
 model.to(device)
+
 
 print("Loading training data ", TRAIN_DATA)
 # read our training data
@@ -86,49 +129,76 @@ print("Loaded %d training records" %len(train_data), flush=True)
 img = train_data[1000][1]
 print("First Image: ", img.shape)
 
-beta_min = 0.0001
-beta_max = 0.5
+a0,a1,a2,a3 = zip(*train_data)
+filenames	    = list(a0)
+images		    = list(a1)
+image_embeddings    = list(a2)
+caption_embeddings  = list(a3)
+
+del train_data
+
+dataset = CustomDataset(filenames, images, image_embeddings, caption_embeddings)
+data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=SHUFFLE, drop_last=True)
+    
+
 #schedule = linear_beta_schedule(TIMESTEPS)
 #schedule = cosine_beta_schedule(TIMESTEPS)
-schedule = cosine_noise_schedule(TIMESTEPS, beta_min, beta_max)
+schedule = cosine_noise_schedule(TIMESTEPS, BETA_MIN, BETA_MAX)
 
-#loss_function = nn.MSELoss()
-loss_function = NormRRMSELoss()
+loss_function = nn.MSELoss()
+#loss_function = NormRRMSELoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-# For each Epoch
+
+
+# Train across all EPOCHS
 for epoch in range(MAX_EPOCHS):
 	print("Epoch: ", epoch)
     
 	model.train()
 	epoch_running_loss = 0.0
-
-	running_loss = 0.0
+	batch_running_loss = 0.0
 
 	# For all images in training data
-	for i,td in enumerate(train_data):
-		(filename, image, image_embeddings, caption_embeddings) = td
-		#print("Training on Image %d/%d" %(i,len(train_data)))
+	for i, batch in enumerate(data_loader):
+    
+		#print("BATCH: ", i, flush=True)
 
-		image = image.astype(np.float32) 
+		optimizer.zero_grad()
+
+		filenames, images, image_embeddings, caption_embeddings = batch
+
+		images		    = images.to(device) 
+		image_embeddings    = image_embeddings.to(device)
+		caption_embeddings  = caption_embeddings.to(device)
+
+		#print("Training batch %d/%d" %(i,len(data_loader)))
+
+		#image = image.astype(np.float32) 
 	
 		# For all timesteps in our noise schedule	
 		for ti, beta in enumerate(schedule): 
-			#print(".", end="", flush=True)
-    
-			optimizer.zero_grad()
 
-			noisy_image = apply_gaussian_noise(image/255, beta).astype(np.float32)
+			noisy_batch = add_noise_to_images(images, beta)
+
+			# Create a tensor of zeros with the same batch size, height, and width
+			timestep_encoding = torch.full((BATCH_SIZE, 1, 64, 64), ti).to(device)
+			#print(timestep_encoding.shape)
+
+			#print("HERE: ", noisy_batch.shape, timestep_encoding.shape)
+
+			# Concatenate the timestep encoding tensor to the batch along the channel dimension
+			noisy_batch_with_timestep = torch.cat((noisy_batch, timestep_encoding), dim=1)
     
 			# timestep encoding
-			timestep_encoding = np.full((64,64,1), float(ti)).astype(np.float32)
-			noisy_image = np.concatenate((noisy_image, timestep_encoding), axis=2)	
+			#timestep_encoding = np.full((64,64,1), float(ti)).astype(np.float32)
+			#noisy_image = np.concatenate((noisy_image, timestep_encoding), axis=2)	
 
-			image_array_transposed = np.transpose(noisy_image,(2,0,1))
-			image_tensor = torch.from_numpy(image_array_transposed).unsqueeze(0)
-			image_tensor = image_tensor.to(device)
+			#image_array_transposed = np.transpose(noisy_image,(2,0,1))
+			#image_tensor = torch.from_numpy(image_array_transposed).unsqueeze(0)
+			#image_tensor = image_tensor.to(device)
 		
-			outputs = model(image_tensor)
+			outputs = model(noisy_batch_with_timestep)
 
 			# get what the image should look like in the prior timestep
 			if(ti==0):
@@ -136,15 +206,20 @@ for epoch in range(MAX_EPOCHS):
 			else:
 			    prior_step = ti-1
 
-			noisy_target  = apply_gaussian_noise(image/255, schedule[prior_step]).astype(np.float32)
-			timestep_encoding = np.full((64,64,1), float(prior_step)).astype(np.float32)
-			#noisy_target = np.concatenate((noisy_target, timestep_encoding), axis=2)	
-			image_array_transposed = np.transpose(noisy_target,(2,0,1))
-			target_tensor = torch.from_numpy(image_array_transposed).unsqueeze(0)
-			target_tensor = target_tensor.to(device)
+			
+			#target_tensor = add_noise_to_images(images, schedule[prior_step]) 
+			target_tensor = images
 
 			#print("outputs: ", outputs.shape)
 			#print("target_tensor: ", target_tensor.shape)
+
+			#print("OUTPUTS: ") 
+			#print(outputs)
+			#print("\n")
+#
+#			print("TARGETS: ") 
+#			print(target_tensor)
+#			print("***************************")
 			
 			loss = loss_function(outputs, target_tensor)
 
@@ -154,15 +229,13 @@ for epoch in range(MAX_EPOCHS):
 			#print(type(loss.item()), loss.item())
 
 			epoch_running_loss += loss.item()
-			running_loss += loss.item()
+			batch_running_loss += loss.item()
 
-		# Every 100 images, show running loss
-		if(i>0 and i%100==0):
-			print("%d/%d:  RUNNING LOSS = %.06f" %(i,len(train_data),running_loss/100))
-			running_loss = 0.0
+		print("%d/%d:  BATCHLOSS = %.06f" %(i,len(data_loader),batch_running_loss/BATCH_SIZE))
+		batch_running_loss = 0.0
 
 	# Print epoch statistics
-	epoch_loss = epoch_running_loss / len(train_data)
+	epoch_loss = epoch_running_loss / (BATCH_SIZE*ti) 
 	print(f"Epoch [{epoch+1}/{MAX_EPOCHS}], Loss: {epoch_running_loss:.4f}")
 
 	checkpoint = {
@@ -174,58 +247,6 @@ for epoch in range(MAX_EPOCHS):
 	checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
 	torch.save(checkpoint, checkpoint_path)
 
+	train_cnt = 0
+
 	
-
-
-exit(0)	    
-
-
-for i, beta in enumerate(schedule):
-	new_image = apply_gaussian_noise(img/255, beta)
-	
-	filename = IMG+"_forward_"+str(i).zfill(3)+".png"
-	filepath = os.path.join(OUTDIR, filename)
-
-	new_image = (new_image*255).astype(np.uint8)
-	new_image = cv2.cvtColor(new_image, cv2.COLOR_RGB2BGR)
-	cv2.imwrite(filepath, new_image)
-
-print("Created %d forward diffusion images in %s"  %(len(schedule), OUTDIR))
-
-
-image_array = np.random.rand(64,64,3).astype(np.float32) 
-image_array_transposed = np.transpose(image_array,(2,0,1))
-image_tensor = torch.from_numpy(image_array_transposed).unsqueeze(0)
-reverse_diff_images = []
-for i,beta in enumerate(reversed(schedule)):
-	print("Calling model() with: ", image_tensor.shape)
-	result = model(image_tensor)
-	print("FROM model(): ", type(result))
-	print("FROM model(): ", result.shape)
-
-	result = result.squeeze(0)
-	print("after squeeze(): ", type(result))
-	print("after squeeze(): ", result.shape)
-
-
-	reverse_diff_images.append(result.squeeze(0).detach().numpy())
-
-for i, new_image in enumerate(reverse_diff_images):
-	filename = IMG+"_reverse_"+str(i).zfill(3)+".png"
-	filepath = os.path.join(OUTDIR, filename)
-
-	new_image = (new_image*255).astype(np.uint8)
-
-	print("L: ", new_image.shape)
-	new_image = np.transpose(new_image,(1,2,0))
-	print("L: ", new_image.shape)
-
-	new_image = cv2.cvtColor(new_image, cv2.COLOR_RGB2BGR)
-
-	print("TO FILE: ", type(new_image))
-	print("TO FILE: ", new_image.shape)
-    
-	cv2.imwrite(filepath, new_image)
-
-print("Done")
-

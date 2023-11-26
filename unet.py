@@ -36,6 +36,19 @@ class DecoderBlock(nn.Module):
 		x = self.conv_block(x)
 		return x
 
+
+class Conv2DSigmoid(nn.Module):
+	def __init__(self, in_channels, out_channels, kernel_size=1, stride=1, padding=1):
+		super(Conv2DSigmoid, self).__init__()
+		self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+		self.sigmoid = nn.Sigmoid()
+
+	def forward(self, x):
+		x = self.conv(x)  # Apply convolution
+		x = self.sigmoid(x)  # Apply sigmoid activation
+		return x
+
+
 class DropoutBlock(nn.Module):
 	def __init__(self, p=0.33):
 		super(DropoutBlock, self).__init__()
@@ -65,6 +78,8 @@ class UNet(nn.Module):
 		self.decoder1 = DecoderBlock(128, 64)
 
 		self.final_conv = nn.Conv2d(64, 3, kernel_size=1)
+    
+		self.sigmoid_conv = Conv2DSigmoid(3,3, kernel_size=1, padding=0)
 
 	def forward(self, x):
 		enc1, x = self.encoder1(x)
@@ -84,6 +99,9 @@ class UNet(nn.Module):
 		x = self.decoder1(x, enc1)
 
 		x = self.final_conv(x)
+    
+		x = self.sigmoid_conv(x)
+	    
 		return x
 
 # Create the model
