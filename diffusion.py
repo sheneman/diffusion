@@ -35,6 +35,7 @@ BATCH_SIZE = 1250
 SHUFFLE = True
 
 
+
 #
 # Set seed and device 
 #
@@ -49,12 +50,11 @@ else:
 	device = "cpu"
 
 
+
+
+
 def linear_beta_schedule(num_steps):
 	return [i / num_steps for i in range(1, num_steps + 1)]
-
-def cosine_beta_schedule(num_steps, s=0.008):
-	steps = np.arange(num_steps, dtype=np.float64)
-	return 1.0-np.cos(((steps / num_steps) + s) / (1 + s) * np.pi / 2) ** 2
 
 def cosine_noise_schedule(T, beta_min, beta_max):
     t = np.linspace(0, T-1, T)
@@ -77,10 +77,13 @@ def add_noise_to_images(images, variance):
 	return noised_images
 
 
-
+#
+# This function is useful for grabbing inference samples as we are training
+#
 def sample_model(epoch, model, device):
+
 	print("Sampling the model")
-	img = torch.rand(1, 3, 64, 64).to(device)
+	img = torch.rand(1, 3, 64, 64).to(device)   # make a purely random image
 
 	for i in range(TIMESTEPS, -1, -1):
 		print("Timestep: %d" %i)
@@ -88,16 +91,12 @@ def sample_model(epoch, model, device):
 		timestep_encoding   = torch.full((1, 1, 64, 64), i).to(device)
 		concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
 
-		print(concatenated_tensor.shape)
-		print(concatenated_tensor)
 		img = model(concatenated_tensor)
 
 		sample_filename = "sample_epoch%s_step%s.png" %(str(epoch).zfill(3), str(i).zfill(3))
 		sample_filepath = os.path.join(SAMPLE_DIR, sample_filename)
 
 		img_array = img.squeeze(dim=0)
-		print(img_array.shape)
-		print(img_array)
 		img_array = img_array.mul(255).byte().permute(1, 2, 0).cpu().numpy()
 
 		pil_image = Image.fromarray(img_array)
@@ -107,13 +106,7 @@ def sample_model(epoch, model, device):
 
 
 
-def apply_gaussian_noise(img, beta):
-	noise = np.random.normal(size=img.shape)
-	#print(beta, noise.shape)
-	#return np.sqrt(1 - beta) * img + np.sqrt(beta) * noise
-	return (1-beta)*img + beta*noise
-
-# Define a custom RMSE loss function
+# Define a custom MSE loss function
 class CustomMSELoss(nn.Module):
 	def __init__(self):
 		super(CustomMSELoss, self).__init__()
@@ -124,19 +117,8 @@ class CustomMSELoss(nn.Module):
 
 		return custom_loss
 
-# Define a custom RMSE loss function
-class NormRRMSELoss(nn.Module):
-	def __init__(self):
-		super(NormRRMSELoss, self).__init__()
 
-	def forward(self, predicted, target):
-		mse_loss = F.mse_loss(predicted, target, reduction='mean')
-		rrmse_loss = torch.sqrt(mse_loss)
-		norm_rrmse_loss = (rrmse_loss/(64*64*3))*1000.0   # normalized to the pixel level
-
-		return norm_rrmse_loss
-
-
+# Define a custom dataset for our data loader
 class CustomDataset(Dataset):
 	def __init__(self, filename, imgs, image_embeddings, caption_embeddings):
 		self.filename = filename
@@ -159,6 +141,9 @@ class CustomDataset(Dataset):
 		return self.filename[idx], image2, image_embedding, caption_embedding
 
 
+#
+# A useful function for debuggings stuff as we train
+#
 def debug_batch(name, batch, timestep):
 	print("In debug_batch():")
 	print("Batch Dimensions: ", batch.shape)
@@ -182,7 +167,7 @@ def debug_batch(name, batch, timestep):
 		
 	img = img.cpu().detach().numpy()
 	img = np.transpose(img,(1,2,0))
-	img = (img*255).astype('uint8')
+
 	print("Transposed Image: ", img.shape)
 	#print(img)
 
@@ -197,39 +182,36 @@ def debug_batch(name, batch, timestep):
 
 
 
+# print instantiate our model and send it to the GPU
 model = UNet()
-#print(model)
 model.to(device)
 
 
-print("Loading training data ", TRAIN_DATA)
 # read our training data
+print("Loading training data ", TRAIN_DATA)
 with open(TRAIN_DATA, 'rb') as traindata_file:
 	train_data = pickle.load(traindata_file)
-
 print("Loaded %d training records" %len(train_data), flush=True)
 
-img = train_data[1000][1]
-print("First Image: ", img.shape)
+
 
 a0,a1,a2,a3 = zip(*train_data)
 filenames	    = list(a0)
 images		    = list(a1)
 image_embeddings    = list(a2)
 caption_embeddings  = list(a3)
-
 del train_data
 
-dataset = CustomDataset(filenames, images, image_embeddings, caption_embeddings)
+# Build our custom dataset and data loader
+dataset     = CustomDataset(filenames, images, image_embeddings, caption_embeddings)
 data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=SHUFFLE, drop_last=True)
     
 
 #schedule = linear_beta_schedule(TIMESTEPS)
 schedule  = cosine_noise_schedule(TIMESTEPS, BETA_MIN, BETA_MAX)
 
+# define our loss function and optimizer
 loss_function = CustomMSELoss()
-#loss_function = nn.MSELoss()
-#loss_function = NormRRMSELoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 
@@ -244,8 +226,6 @@ for epoch in range(MAX_EPOCHS):
 	# For all images in training data
 	for batch_i, batch in enumerate(data_loader):
     
-		#print("BATCH: ", batch_i, flush=True)
-
 		optimizer.zero_grad()
 
 		filenames, images, image_embeddings, caption_embeddings = batch
@@ -253,8 +233,6 @@ for epoch in range(MAX_EPOCHS):
 		images		    = images.to(device) 
 		image_embeddings    = image_embeddings.to(device)
 		caption_embeddings  = caption_embeddings.to(device)
-
-		#print("Training batch %d/%d" %(batch_i,len(data_loader)))
 
 		# For all timesteps in our noise schedule	
 		for ti, beta in enumerate(schedule): 
@@ -277,25 +255,7 @@ for epoch in range(MAX_EPOCHS):
 
 			#debug_batch(noisy_batch_with_timestep, ti)
     
-			# timestep encoding
-			#timestep_encoding = np.full((64,64,1), float(ti)).astype(np.float32)
-			#noisy_image = np.concatenate((noisy_image, timestep_encoding), axis=2)	
-
-			#image_array_transposed = np.transpose(noisy_image,(2,0,1))
-			#image_tensor = torch.from_numpy(image_array_transposed).unsqueeze(0)
-			#image_tensor = image_tensor.to(device)
-		
 			outputs = model(noisy_batch_with_timestep)
-
-			#if(batch_i==0):
-			#	debug_batch("inferred",outputs, ti)
-			#	debug_batch("noisy_target",noisy_batch_with_timestep, ti)
-
-			#debug_batch("inferred",outputs, ti)
-			#debug_batch("target",images, ti)
-			#debug_batch("noisy_target",noisy_batch_with_timestep, ti)
-
-			#print(outputs[0])
 
 			# get what the image should look like in the prior timestep
 			if(ti==0):
@@ -307,24 +267,11 @@ for epoch in range(MAX_EPOCHS):
 			#target_tensor = add_noise_to_images(images, schedule[prior_step]) 
 			target_tensor = images
 
-			#print("outputs: ", outputs.shape)
-			#print("target_tensor: ", target_tensor.shape)
-
-			#print("OUTPUTS: ") 
-			#print(outputs)
-			#print("\n")
-#
-#			print("TARGETS: ") 
-#			print(target_tensor)
-#			print("***************************")
 			
 			loss = loss_function(outputs, target_tensor)
-
 			loss.backward()
 			optimizer.step()	
 	
-			#print(type(loss.item()), loss.item())
-
 			epoch_running_loss += loss.item()
 			batch_running_loss += loss.item()
 
@@ -335,7 +282,7 @@ for epoch in range(MAX_EPOCHS):
 
 
 	# Print epoch statistics
-	epoch_loss = epoch_running_loss / (BATCH_SIZE*batch_i*TIMESTEPS) 
+	epoch_loss = epoch_running_loss / (BATCH_SIZE*(batch_i+1)*TIMESTEPS) 
 	print(f"Epoch [{epoch+1}/{MAX_EPOCHS}], Loss: {epoch_loss:.4f}")
 	epoch_running_loss = 0.0
 
