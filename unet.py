@@ -107,7 +107,4 @@ class UNet(nn.Module):
 	    
 		return x
 
-# Create the model
-#model = UNet()
-#print(model)
 
