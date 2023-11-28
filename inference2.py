@@ -11,9 +11,9 @@ from unet import UNet
 
 CHECKPOINT_DIR = "runs"
 #WEIGHTS = "runs/diffusion_epoch_039.pth"
-WEIGHTS = "runs/diffusion_epoch_036.pth"
+WEIGHTS = "runs/diffusion_epoch_099.pth"
 #WEIGHTS = "model.pth"
-TIMESTEPS = 500
+TIMESTEPS = 100
 OUTDIR = "outputs"
 INFDEBUG = "infdebug"
 
@@ -39,14 +39,9 @@ model = UNet()
 checkpoint = torch.load(WEIGHTS, map_location=torch.device('cpu'))
 print(len(checkpoint))
 model.load_state_dict(checkpoint['model_state_dict'])
-
 model.to(device)
 
-#optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 print("U-Net Model and Weights Loaded...", flush=True)
-
-img = torch.rand(1, 3, 64, 64).to(device)
-#print(img)
 
 
 def add_noise_to_image(image, variance):
@@ -56,14 +51,19 @@ def add_noise_to_image(image, variance):
 	noised_image = torch.clamp(noised_image, 0.0, 1.0)
 	return noised_image
 
+
+img = torch.rand(1, 3, 64, 64).to(device)   # initial purely random image
 for i in range(TIMESTEPS, -1, -1):
 	print("Timestep: %d" %i)
 
 	timestep_encoding   = torch.full((1, 1, 64, 64), i).to(device)
-	concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
+	noisy_tensor_with_timestep = torch.cat((img, timestep_encoding), dim=1)
 
-	img = model(concatenated_tensor)
-	#img = add_noise_to_image(img, 0.01)
+	predicted_noise = model(noisy_tensor_with_timestep)
+	denoised_image = img - predicted_noise
+	
+	img = denoised_image
+
 
 	if(False):
 		debug_filename = "infdebug_%s.png" %(str(i).zfill(3)) 
@@ -75,24 +75,6 @@ for i in range(TIMESTEPS, -1, -1):
 		pil_image = Image.fromarray(img_array)
 		pil_image.save(debug_filepath)
 		pil_image.close()
-
-
-'''
-for i in range(10, -1, -1):
-	print("Timestep: %d" %i)
-	timestep_encoding   = torch.full((1, 1, 64, 64), i).to(device)
-	concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
-
-	img = model(concatenated_tensor)
-
-
-timestep_encoding   = torch.full((1, 1, 64, 64), 0).to(device)
-for i in range(10):
-	concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
-	img = model(concatenated_tensor)
-'''
-
-
 
 
 output_filename = "output.png"

@@ -65,7 +65,7 @@ for i in images:
 		full_caption += " " + caption
 	print(full_caption)
 
-	if(len(full_caption) > 77):
+	if(len(full_caption) > 77):  # should be tokens, not characters!
 		full_caption = full_caption[0:77]
 
 

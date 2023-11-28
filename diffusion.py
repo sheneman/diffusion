@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import clip
 import pickle
+import time
 import numpy as np
 import os
 from PIL import Image
@@ -14,18 +15,21 @@ from unet import UNet
 
 
 IMG	       = "CLIP.png"
-TRAIN_DATA     = "COCO_with_CLIP_embeddings.pickle"
-TIMESTEPS      = 30
+#TRAIN_DATA     = "COCO_with_CLIP_embeddings.pickle"
+TRAIN_DATA     = "CELEBA_with_CLIP_embeddings.pickle"
+TIMESTEPS      = 100
 OUTDIR         = "outputs"
 MAX_EPOCHS     = 100
 LEARNING_RATE  = 0.001
-CHECKPOINT_DIR = "runs"
+CHECKPOINT_DIR = "/tmp"
+DEBUG_DIR      = "debug"
+SAMPLE_DIR     = "samples"
 
 # params for the noise schedule
-BETA_MIN = 0.0001
-BETA_MAX = 0.5
+BETA_MIN = 0.00001
+BETA_MAX = 4.00000
 
-RANDOM_SEED    = 42
+RANDOM_SEED    = time.time()
 
 BATCH_SIZE = 1250
 SHUFFLE = True
@@ -68,7 +72,39 @@ def add_noise_to_images(images, variance):
 	# Add noise to the images
 	noised_images = images + noise
 
+	noised_images = torch.clamp(noised_images, 0.0, 1.0)
+
 	return noised_images
+
+
+
+def sample_model(epoch, model, device):
+	print("Sampling the model")
+	img = torch.rand(1, 3, 64, 64).to(device)
+
+	for i in range(TIMESTEPS, -1, -1):
+		print("Timestep: %d" %i)
+
+		timestep_encoding   = torch.full((1, 1, 64, 64), i).to(device)
+		concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
+
+		print(concatenated_tensor.shape)
+		print(concatenated_tensor)
+		img = model(concatenated_tensor)
+
+		sample_filename = "sample_epoch%s_step%s.png" %(str(epoch).zfill(3), str(i).zfill(3))
+		sample_filepath = os.path.join(SAMPLE_DIR, sample_filename)
+
+		img_array = img.squeeze(dim=0)
+		print(img_array.shape)
+		print(img_array)
+		img_array = img_array.mul(255).byte().permute(1, 2, 0).cpu().numpy()
+
+		pil_image = Image.fromarray(img_array)
+		pil_image.save(sample_filepath)
+		pil_image.close()
+
+
 
 
 def apply_gaussian_noise(img, beta):
@@ -77,6 +113,16 @@ def apply_gaussian_noise(img, beta):
 	#return np.sqrt(1 - beta) * img + np.sqrt(beta) * noise
 	return (1-beta)*img + beta*noise
 
+# Define a custom RMSE loss function
+class CustomMSELoss(nn.Module):
+	def __init__(self):
+		super(CustomMSELoss, self).__init__()
+
+	def forward(self, predicted, target):
+		mse_loss = F.mse_loss(predicted, target, reduction='mean')
+		custom_loss = mse_loss * 1e4
+
+		return custom_loss
 
 # Define a custom RMSE loss function
 class NormRRMSELoss(nn.Module):
@@ -113,6 +159,43 @@ class CustomDataset(Dataset):
 		return self.filename[idx], image2, image_embedding, caption_embedding
 
 
+def debug_batch(name, batch, timestep):
+	print("In debug_batch():")
+	print("Batch Dimensions: ", batch.shape)
+
+	example = batch[10]
+	print("Example Dimensions: ", example.shape)
+
+	if(example.shape[0]==4):
+		print("This batch includes a timestep channel!")
+
+		# lets get the timestep encoding value first
+		timestep_encoding = int(example[3][0][0].cpu().numpy())
+		print("Timestep Encoding: ", timestep_encoding)
+
+		img = example[:3, :, :]
+	else:
+		img = example
+
+
+	print("Tensor Image: ", img.shape)
+		
+	img = img.cpu().detach().numpy()
+	img = np.transpose(img,(1,2,0))
+	img = (img*255).astype('uint8')
+	print("Transposed Image: ", img.shape)
+	#print(img)
+
+	filename = "%s_%s.png" %(name, str(timestep).zfill(3))
+	filepath = os.path.join(DEBUG_DIR, filename)
+
+	pil_image = Image.fromarray(img)
+	pil_image.save(filepath)	
+	print("Saved file to %s", filepath)
+
+	
+
+
 
 model = UNet()
 #print(model)
@@ -142,27 +225,26 @@ data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=SHUFFLE, drop_l
     
 
 #schedule = linear_beta_schedule(TIMESTEPS)
-#schedule = cosine_beta_schedule(TIMESTEPS)
-schedule = cosine_noise_schedule(TIMESTEPS, BETA_MIN, BETA_MAX)
+schedule  = cosine_noise_schedule(TIMESTEPS, BETA_MIN, BETA_MAX)
 
-loss_function = nn.MSELoss()
+loss_function = CustomMSELoss()
+#loss_function = nn.MSELoss()
 #loss_function = NormRRMSELoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 
-
 # Train across all EPOCHS
 for epoch in range(MAX_EPOCHS):
-	print("Epoch: ", epoch)
+	print("Epoch: ", epoch+1)
     
 	model.train()
 	epoch_running_loss = 0.0
 	batch_running_loss = 0.0
 
 	# For all images in training data
-	for i, batch in enumerate(data_loader):
+	for batch_i, batch in enumerate(data_loader):
     
-		#print("BATCH: ", i, flush=True)
+		#print("BATCH: ", batch_i, flush=True)
 
 		optimizer.zero_grad()
 
@@ -172,14 +254,15 @@ for epoch in range(MAX_EPOCHS):
 		image_embeddings    = image_embeddings.to(device)
 		caption_embeddings  = caption_embeddings.to(device)
 
-		#print("Training batch %d/%d" %(i,len(data_loader)))
+		#print("Training batch %d/%d" %(batch_i,len(data_loader)))
 
-		#image = image.astype(np.float32) 
-	
 		# For all timesteps in our noise schedule	
 		for ti, beta in enumerate(schedule): 
 
+			#debug_batch(images, ti)
+
 			noisy_batch = add_noise_to_images(images, beta)
+			#debug_batch(noisy_batch, ti)
 
 			# Create a tensor of zeros with the same batch size, height, and width
 			timestep_encoding = torch.full((BATCH_SIZE, 1, 64, 64), ti).to(device)
@@ -189,6 +272,10 @@ for epoch in range(MAX_EPOCHS):
 
 			# Concatenate the timestep encoding tensor to the batch along the channel dimension
 			noisy_batch_with_timestep = torch.cat((noisy_batch, timestep_encoding), dim=1)
+
+			#print("SHAPE: ", noisy_batch_with_timestep.shape)
+
+			#debug_batch(noisy_batch_with_timestep, ti)
     
 			# timestep encoding
 			#timestep_encoding = np.full((64,64,1), float(ti)).astype(np.float32)
@@ -199,6 +286,16 @@ for epoch in range(MAX_EPOCHS):
 			#image_tensor = image_tensor.to(device)
 		
 			outputs = model(noisy_batch_with_timestep)
+
+			#if(batch_i==0):
+			#	debug_batch("inferred",outputs, ti)
+			#	debug_batch("noisy_target",noisy_batch_with_timestep, ti)
+
+			#debug_batch("inferred",outputs, ti)
+			#debug_batch("target",images, ti)
+			#debug_batch("noisy_target",noisy_batch_with_timestep, ti)
+
+			#print(outputs[0])
 
 			# get what the image should look like in the prior timestep
 			if(ti==0):
@@ -231,12 +328,18 @@ for epoch in range(MAX_EPOCHS):
 			epoch_running_loss += loss.item()
 			batch_running_loss += loss.item()
 
-		print("%d/%d:  BATCHLOSS = %.06f" %(i,len(data_loader),batch_running_loss/BATCH_SIZE))
+		print("%d/%d:  BATCHLOSS = %.06f" %(batch_i,len(data_loader),batch_running_loss/(BATCH_SIZE*TIMESTEPS)))
 		batch_running_loss = 0.0
 
+
+
+
 	# Print epoch statistics
-	epoch_loss = epoch_running_loss / (BATCH_SIZE*ti) 
-	print(f"Epoch [{epoch+1}/{MAX_EPOCHS}], Loss: {epoch_running_loss:.4f}")
+	epoch_loss = epoch_running_loss / (BATCH_SIZE*batch_i*TIMESTEPS) 
+	print(f"Epoch [{epoch+1}/{MAX_EPOCHS}], Loss: {epoch_loss:.4f}")
+	epoch_running_loss = 0.0
+
+	sample_model(epoch, model, device)	
 
 	checkpoint = {
 	    'epoch': epoch,
@@ -247,6 +350,7 @@ for epoch in range(MAX_EPOCHS):
 	checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
 	torch.save(checkpoint, checkpoint_path)
 
-	train_cnt = 0
-
+	checkpoint_name = "FULL_diffusion_epoch_%s.pt" %(str(epoch).zfill(3))
+	checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
+	torch.save(model, checkpoint_path)
 	

@@ -5,3 +5,13 @@ outputs/*
 __pycache__
 __pycache__/*
 runs/*
+runs_coco/*
+debug/*
+samples/*
+infdebug/*
+diff2*
+diff2*/*
+diff3*
+diff3*/*
+*.pth
+*.pt

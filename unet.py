@@ -4,13 +4,14 @@ import torch.nn as nn
 class ConvBlock(nn.Module):
 	def __init__(self, in_channels, out_channels):
 		super(ConvBlock, self).__init__()
-		self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-		self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-		self.relu = nn.LeakyReLU(inplace=True, negative_slope=0.01)
+		self.conv1  = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+		self.conv2  = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+		self.bn	    = nn.BatchNorm2d(out_channels) 
+		self.relu   = nn.LeakyReLU(inplace=True, negative_slope=0.01)
     
 	def forward(self, x):
-		x = self.relu(self.conv1(x))
-		x = self.relu(self.conv2(x))
+		x = self.relu(self.bn(self.conv1(x)))
+		x = self.relu(self.bn(self.conv2(x)))
 		return x
 
 class EncoderBlock(nn.Module):
@@ -79,7 +80,7 @@ class UNet(nn.Module):
 
 		self.final_conv = nn.Conv2d(64, 3, kernel_size=1)
     
-		self.sigmoid_conv = Conv2DSigmoid(3,3, kernel_size=1, padding=0)
+		#self.sigmoid_conv = Conv2DSigmoid(3,3, kernel_size=1, padding=0)
 
 	def forward(self, x):
 		enc1, x = self.encoder1(x)
@@ -87,11 +88,11 @@ class UNet(nn.Module):
 		enc3, x = self.encoder3(x)
 		enc4, x = self.encoder4(x)
 
-		x = self.dropout1(x)
+		#x = self.dropout1(x)
 
 		x = self.center(x)
 
-		x = self.dropout2(x)
+		#x = self.dropout2(x)
 
 		x = self.decoder4(x, enc4)
 		x = self.decoder3(x, enc3)
@@ -100,7 +101,9 @@ class UNet(nn.Module):
 
 		x = self.final_conv(x)
     
-		x = self.sigmoid_conv(x)
+		#x = self.sigmoid_conv(x)
+
+		x = torch.sigmoid(x)
 	    
 		return x
 
