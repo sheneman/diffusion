@@ -17,21 +17,21 @@ from unet import UNet
 IMG	       = "CLIP.png"
 #TRAIN_DATA     = "COCO_with_CLIP_embeddings.pickle"
 TRAIN_DATA     = "CELEBA_with_CLIP_embeddings.pickle"
-TIMESTEPS      = 100
+TIMESTEPS      = 1000
 OUTDIR         = "outputs"
-MAX_EPOCHS     = 100
-LEARNING_RATE  = 0.001
-CHECKPOINT_DIR = "/tmp"
+MAX_EPOCHS     = 500
+LEARNING_RATE  = 0.0001
+CHECKPOINT_DIR = "runs"
 DEBUG_DIR      = "debug"
 SAMPLE_DIR     = "samples"
 
 # params for the noise schedule
-BETA_MIN = 0.00001
-BETA_MAX = 4.00000
+BETA_MIN = 0.00
+BETA_MAX = 0.75
 
 RANDOM_SEED    = time.time()
 
-BATCH_SIZE = 1250
+BATCH_SIZE = 700
 SHUFFLE = True
 
 
@@ -86,12 +86,12 @@ def sample_model(epoch, model, device):
 	img = torch.rand(1, 3, 64, 64).to(device)   # make a purely random image
 
 	for i in range(TIMESTEPS, -1, -1):
-		print("Timestep: %d" %i)
-
 		timestep_encoding   = torch.full((1, 1, 64, 64), i).to(device)
 		concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
 
-		img = model(concatenated_tensor)
+		predicted_noise = model(concatenated_tensor)
+
+		img -= predicted_noise
 
 		sample_filename = "sample_epoch%s_step%s.png" %(str(epoch).zfill(3), str(i).zfill(3))
 		sample_filepath = os.path.join(SAMPLE_DIR, sample_filename)
@@ -165,7 +165,7 @@ def debug_batch(name, batch, timestep):
 
 	print("Tensor Image: ", img.shape)
 		
-	img = img.cpu().detach().numpy()
+	img = (img.cpu().detach().numpy()*255).astype('uint8')
 	img = np.transpose(img,(1,2,0))
 
 	print("Transposed Image: ", img.shape)
@@ -235,58 +235,43 @@ for epoch in range(MAX_EPOCHS):
 		caption_embeddings  = caption_embeddings.to(device)
 
 		# For all timesteps in our noise schedule	
-		for ti, beta in enumerate(schedule): 
-
-			#debug_batch(images, ti)
-
-			noisy_batch = add_noise_to_images(images, beta)
-			#debug_batch(noisy_batch, ti)
-
-			# Create a tensor of zeros with the same batch size, height, and width
-			timestep_encoding = torch.full((BATCH_SIZE, 1, 64, 64), ti).to(device)
-			#print(timestep_encoding.shape)
-
-			#print("HERE: ", noisy_batch.shape, timestep_encoding.shape)
-
-			# Concatenate the timestep encoding tensor to the batch along the channel dimension
-			noisy_batch_with_timestep = torch.cat((noisy_batch, timestep_encoding), dim=1)
-
-			#print("SHAPE: ", noisy_batch_with_timestep.shape)
-
-			#debug_batch(noisy_batch_with_timestep, ti)
-    
-			outputs = model(noisy_batch_with_timestep)
-
-			# get what the image should look like in the prior timestep
-			if(ti==0):
-			    prior_step = ti
+		ti = 0
+		noisy_batch = images
+		for ti in range(TIMESTEPS):
+			if(ti == 0):
+				beta_delta = schedule[ti]
 			else:
-			    prior_step = ti-1
+				beta_delta = schedule[ti]-schedule[ti-1]
 
-			
-			#target_tensor = add_noise_to_images(images, schedule[prior_step]) 
-			target_tensor = images
+			noisy_batch = add_noise_to_images(noisy_batch, beta_delta)
 
-			
-			loss = loss_function(outputs, target_tensor)
+			#debug_batch("noise", noisy_batch, ti)
+
+			timestep_encoding = torch.full((BATCH_SIZE, 1, 64, 64), ti).to(device)
+			noisy_batch_with_timestep = torch.cat((noisy_batch, timestep_encoding), dim=1)
+    
+			predicted_noise = model(noisy_batch_with_timestep)
+			actual_noise	= noisy_batch - images	
+
+			loss = loss_function(predicted_noise, actual_noise)
 			loss.backward()
 			optimizer.step()	
 	
 			epoch_running_loss += loss.item()
 			batch_running_loss += loss.item()
 
-		print("%d/%d:  BATCHLOSS = %.06f" %(batch_i,len(data_loader),batch_running_loss/(BATCH_SIZE*TIMESTEPS)))
+		print("%d/%d:  BATCHLOSS = %.06f" %(batch_i+1,len(data_loader),batch_running_loss/(BATCH_SIZE*TIMESTEPS)), flush=True)
 		batch_running_loss = 0.0
-
-
+	    
 
 
 	# Print epoch statistics
 	epoch_loss = epoch_running_loss / (BATCH_SIZE*(batch_i+1)*TIMESTEPS) 
-	print(f"Epoch [{epoch+1}/{MAX_EPOCHS}], Loss: {epoch_loss:.4f}")
+	print(f"Epoch [{epoch+1}/{MAX_EPOCHS}], Loss: {epoch_loss:.4f}", flush=True)
 	epoch_running_loss = 0.0
 
-	sample_model(epoch, model, device)	
+	if(epoch%10 == 0):
+		sample_model(epoch, model, device)	
 
 	checkpoint = {
 	    'epoch': epoch,
@@ -297,7 +282,7 @@ for epoch in range(MAX_EPOCHS):
 	checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
 	torch.save(checkpoint, checkpoint_path)
 
-	checkpoint_name = "FULL_diffusion_epoch_%s.pt" %(str(epoch).zfill(3))
-	checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
-	torch.save(model, checkpoint_path)
+	#checkpoint_name = "FULL_diffusion_epoch_%s.pt" %(str(epoch).zfill(3))
+	#checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
+	#torch.save(model, checkpoint_path)
 	

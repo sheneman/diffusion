@@ -11,11 +11,17 @@ from unet import UNet
 
 CHECKPOINT_DIR = "runs"
 #WEIGHTS = "runs/diffusion_epoch_039.pth"
-WEIGHTS = "runs/diffusion_epoch_036.pth"
+WEIGHTS = "runs/diffusion_epoch_033.pth"
 #WEIGHTS = "model.pth"
-TIMESTEPS = 500
-OUTDIR = "outputs"
-INFDEBUG = "infdebug"
+TIMESTEPS = 1000
+SAMPLE_DIR = "samples1"
+
+# params for the noise schedule
+BETA_MIN = 0.00001
+BETA_MAX = 0.75
+
+
+
 
 #
 # Set seed and device 
@@ -32,6 +38,12 @@ else:
 	device = "cpu"
 
 
+def cosine_noise_schedule(T, beta_min, beta_max):
+	t = np.linspace(0, T-1, T)
+	beta_t = beta_min + (beta_max - beta_min) * (1 - np.cos(t / T * np.pi)) / 2
+	return beta_t
+
+
 # Define model and load state dict
 print("DEVICE: ", device)
 model = UNet()
@@ -46,8 +58,6 @@ model.to(device)
 print("U-Net Model and Weights Loaded...", flush=True)
 
 img = torch.rand(1, 3, 64, 64).to(device)
-#print(img)
-
 
 def add_noise_to_image(image, variance):
 	std_dev = torch.sqrt(torch.tensor(variance))
@@ -56,49 +66,40 @@ def add_noise_to_image(image, variance):
 	noised_image = torch.clamp(noised_image, 0.0, 1.0)
 	return noised_image
 
-for i in range(TIMESTEPS, -1, -1):
-	print("Timestep: %d" %i)
 
-	timestep_encoding   = torch.full((1, 1, 64, 64), i).to(device)
-	concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
+schedule = cosine_noise_schedule(TIMESTEPS, BETA_MIN, BETA_MAX)
+def inference(model, iterations):
 
-	img = model(concatenated_tensor)
-	#img = add_noise_to_image(img, 0.01)
+	acc_noise_delta = torch.zeros(1,3,64,64).to(device)
 
-	if(False):
-		debug_filename = "infdebug_%s.png" %(str(i).zfill(3)) 
-		debug_filepath = os.path.join(INFDEBUG, debug_filename)
-		
-		img_array = img.squeeze(dim=0)
-		img_array = img_array.mul(255).byte().permute(1, 2, 0).cpu().numpy()
+	for i in range(iterations):
 
-		pil_image = Image.fromarray(img_array)
-		pil_image.save(debug_filepath)
-		pil_image.close()
+		noisy_image = torch.rand(1, 3, 64, 64).to(device)   # make a purely random image
 
+		for t in range(TIMESTEPS, 1, -1):
 
-'''
-for i in range(10, -1, -1):
-	print("Timestep: %d" %i)
-	timestep_encoding   = torch.full((1, 1, 64, 64), i).to(device)
-	concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
+			timestep_encoding   = torch.full((1, 1, 64, 64), t).to(device)
+			noisy_image_with_timestep = torch.cat((noisy_image, timestep_encoding), dim=1)
 
-	img = model(concatenated_tensor)
+			beta_delta = schedule[t-1] - schedule[t-2]
+			print(beta_delta)
+
+			predicted_noise = model(noisy_image_with_timestep)
+			noisy_image -= (predicted_noise * beta_delta)
+			noisy_image = torch.clamp(noisy_image, 0.0, 1.0)
 
 
-timestep_encoding   = torch.full((1, 1, 64, 64), 0).to(device)
-for i in range(10):
-	concatenated_tensor = torch.cat((img, timestep_encoding), dim=1)
-	img = model(concatenated_tensor)
-'''
+			filename = "sample%s_step%s.png" %(str(i).zfill(3), str(t).zfill(3))
+			filepath = os.path.join(SAMPLE_DIR, filename)
 
+			img_array = noisy_image.squeeze(dim=0)
+			img_array = img_array.mul(255).byte().permute(1, 2, 0).cpu().numpy()
 
+			pil_image = Image.fromarray(img_array)
+			pil_image.save(filepath)
+			pil_image.close()
 
+	print(acc_noise_delta)
 
-output_filename = "output.png"
-output_path = os.path.join(OUTDIR, output_filename)
-img = img.squeeze(dim=0)
-img = img.mul(255).byte().permute(1, 2, 0).cpu().numpy()
-pil_image = Image.fromarray(img)
-pil_image.save(output_path)
-	
+inference(model, 3)
+
