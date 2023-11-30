@@ -8,6 +8,7 @@ runs/*
 runs_coco/*
 debug/*
 samples/*
+sample*/*
 infdebug/*
 diff2*
 diff2*/*
