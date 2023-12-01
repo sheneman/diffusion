@@ -16,3 +16,5 @@ diff3*
 diff3*/*
 *.pth
 *.pt
+out/*
+out*/*
